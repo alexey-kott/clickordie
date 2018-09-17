@@ -1,0 +1,12 @@
+async-generator==1.9
+certifi==2018.4.16
+chardet==3.0.4
+click==6.7
+googletrans==2.3.0
+idna==2.7
+pyaes==1.6.1
+pyasn1==0.4.2
+requests==2.19.1
+rsa==3.4.2
+Telethon==1.1.1
+urllib3==1.23
