@@ -1,143 +1,82 @@
 import asyncio
-import json
 import re
-from collections import defaultdict
-from typing import Union
+from typing import List
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from telethon import TelegramClient, events
-from telethon.tl.types import PeerChannel, PeerChat, PeerUser
-from googletrans import Translator
 from aiohttp import ClientSession
 from telegraph import Telegraph
 
-from config import TG_API_ID, TG_API_HASH, PHONE, TELEGRAPH_USER_TOKEN
-from forwarding_schema import FORWARDING_SCHEMA
+from config import (
+    TG_API_ID, TG_API_HASH, PHONE,
+    TELEGRAPH_USER_TOKEN, SOURCE_CHANNELS, DEST_CHANNELS,
+)
 import logging
 
 logging.basicConfig(level=logging.ERROR)
-translator = Translator()
-forwarding_schema = []
 
 client = TelegramClient(PHONE.strip('+'),
                         TG_API_ID,
                         TG_API_HASH)
 
-
-AVAILABLE_TAGS = ['a', 'aside', 'b', 'blockquote', 'br', 'code', 'em', 'figcaption', 'figure', 'h3', 'h4', 'hr', 'i',
-                  'iframe', 'img', 'li', 'ol', 'p', 'pre', 's', 'strong', 'u', 'ul', 'video']
-
-def init_forwarding_schema():
-    for forwarding_item in FORWARDING_SCHEMA:
-        item = defaultdict(set)
-        for direction, names in forwarding_item.items():
-            entities = {search_entities(name) for name in names if search_entities(name)}
-            item[direction] = entities
-        if forwarding_item.get("TRANSLATE"):
-            item['TRANSLATE'] = forwarding_item['TRANSLATE']
-        forwarding_schema.append(item)
+# ['a', 'aside', 'b', 'blockquote', 'br', 'code', 'em', 'figcaption', 'figure', 'h3', 'h4', 'hr',
+# 'i', 'iframe', 'img', 'li', 'ol', 'p', 'pre', 's', 'strong', 'u', 'ul', 'video']
+AVAILABLE_TAGS = ['h1', 'h2', 'h3', 'h4', 'hr', 'img', 'p']
 
 
-def search_entities(name: str) -> int:
-    for dialog in user_dialogs:
-        if name.startswith('@'):
-            if getattr(dialog.entity, 'username', None) == name.strip('@'):
-                return dialog.entity.id
-        else:
-            if getattr(dialog.entity, 'title', None) == name:
-                return dialog.entity.id
-            if dialog.name == name:
-                return dialog.entity.id
+def prepare_items(items: List[Tag]) -> str:
+    for item in items:
+        if item.name == 'h1':
+            item.name = 'h3'
+        if item.name == 'h2':
+            item.name = 'h4'
+        if item.span is not None:
+            item.span.decompose()
+
+    return ''.join([str(item) for item in items])
 
 
-def get_message_text(addressee: str,
-                     msg_text: str, translate_schema=None) -> str:
-    if translate_schema is None:
-        return f"{msg_text}"
-    else:
-        translate = translator.translate(msg_text,
-                                         src=translate_schema.get("FROM"),
-                                         dest=translate_schema.get('TO'))
-        return f"{addressee}\n {msg_text}\n\n{translate.text}"
+async def push_post_to_telegraph(message: str) -> str:
+    post_links = re.findall(r'https://click-or-die.ru[\S]*', message)
 
-
-def get_dialog(peer_entity: Union[PeerChannel, PeerChat, PeerUser]):
-    try:
-        entity_id = peer_entity.channel_id
-    except AttributeError:
-        entity_id = peer_entity.chat_id
-
-    for dialog in user_dialogs:
-        if dialog.entity.id == entity_id:
-            return dialog.entity
-
-
-@client.on(events.NewMessage(chats=('https://t.me/clickordie', '@memotronadminchannel')))
-async def handler(event):
-    # print(event.message.message)
-    link = re.findall(r'https:\/\/click-or-die.ru[\S]*', event.message.message)[0]
+    if len(post_links) == 0:
+        return message
 
     telegraph = Telegraph(access_token=TELEGRAPH_USER_TOKEN)
 
     async with ClientSession() as session:
-        async with session.get(link) as response:
+        async with session.get(post_links[0]) as response:
             page_source = await response.text()
-
             soup = BeautifulSoup(page_source, "lxml")
             content = soup.find_all(class_="post-inside")[0]
+            items = content.find_all(AVAILABLE_TAGS)
+            html_contents = prepare_items(items)
 
-            items = content.find_all(['img'])
+            title = soup.find('title').text.split('|')[0]
+            telegraph_response = telegraph.create_page(title, html_content=''.join(html_contents))
 
-            for item in items:
-                print(item['src'])
+            return f"{message}\n{telegraph_response['url']}"
 
-            html_contents = [str(item) for item in items]
 
-            # print(telegraph.create_page('Test article', html_content=''.join(html_contents)))
+@client.on(events.NewMessage(chats=SOURCE_CHANNELS))
+async def handler(event):
+    post_text = await push_post_to_telegraph(event.message.message)
 
-            # with open("page.html", "w") as file:
-            #     file.write(page_source)
+    for dest_channel in DEST_CHANNELS:
+        dest_channel = await client.get_entity(dest_channel)
+        try:
+            await client.send_message(dest_channel, post_text, file=event.message.media)
+        except Exception as e:
+            logging.error(e)
+            await client.send_message(dest_channel, post_text)
 
 
 async def main() -> None:
-    global user_dialogs
-
-
-
     await client.start()
-
-    # user_dialogs = await client.get_dialogs()
-    # init_forwarding_schema()
-
     await client.run_until_disconnected()
 
 
 if __name__ == "__main__":
-    # import requests as req
-    #
-    # params = {
-    #     "access_token": TELEGRAPH_USER_TOKEN,
-    #     "title": "Test article",
-    #     "return_content": True,
-    #     "content":
-    # }
-    #
-    # response = req.get("https://api.telegra.ph/createPage", params=params)
-    # # print(str(response.text, 'utf-8', errors='replace'))
-    #
-    # data = json.loads(response.text, encoding='utf-8')
-    #
-    # print(data)
-    # # pages = data['result']['pages']
-    #
-    # # for page in pages:
-    # #     print(page['description'])
-    #
-    # with open("telegraph_pages.json", "w", encoding='utf-8') as file:
-    #     file.write(response.text)
-    #
-    # exit()
-
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
     loop.close()
