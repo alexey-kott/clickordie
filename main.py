@@ -13,7 +13,10 @@ from config import (
 )
 import logging
 
-logging.basicConfig(level=logging.ERROR)
+logging.basicConfig(level=logging.ERROR,
+                    format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
+                    datefmt='%m-%d %H:%M',
+                    filename='err.log')
 
 client = TelegramClient(PHONE.strip('+'),
                         TG_API_ID,

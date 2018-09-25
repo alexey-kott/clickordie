@@ -3,4 +3,4 @@ config.py
 venv/
 __pycache__/
 .idea/
-forwarding_schema.py
+err.log
